@@ -16,6 +16,7 @@ import threading
 import datetime
 import csv
 import signal
+import concurrent.futures
 from urllib.parse import urljoin, urlparse
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
@@ -113,14 +114,23 @@ class Colors:
         return f"{Colors.YELLOW}{ip}{Colors.RESET}"
 
 
-# Global variable to control scan interruption
+# Global variable and event to control scan interruption
 scan_interrupted = False
+scan_interrupt_event = threading.Event()
+
+
+def reset_scan_interruption():
+    """Resets interruption flags for a new scan phase."""
+    global scan_interrupted
+    scan_interrupted = False
+    scan_interrupt_event.clear()
 
 
 # Handler for SIGINT signal (Ctrl+C)
 def handle_keyboard_interrupt(signum, frame):
     global scan_interrupted
     scan_interrupted = True
+    scan_interrupt_event.set()
     print("\n[!] Interruption detected. Stopping current scan...")
     # Do not call sys.exit() to allow the program to continue
 
@@ -647,6 +657,8 @@ class FuzzStorm:
         last_exception = None
 
         for retry in range(max_retries):
+            if scan_interrupt_event.is_set():
+                return url, None
             try:
                 # Measure response time
                 start_time = time.time()
@@ -831,6 +843,9 @@ class FuzzStorm:
         if self.debug:
             print(f"[DEBUG] Scanning path: {path}")
 
+        if scan_interrupt_event.is_set():
+            return None
+
         if self.delay > 0:
             if self.debug:
                 print(f"[DEBUG] Applying delay of {self.delay} seconds")
@@ -915,8 +930,7 @@ class FuzzStorm:
 
     def normal_scan(self):
         """Normal scan: searches paths directly from the wordlist"""
-        global scan_interrupted
-        scan_interrupted = False
+        reset_scan_interruption()
 
         print("\n" + "="*80)
         if self.use_colors:
@@ -952,8 +966,7 @@ class FuzzStorm:
 
                 for future in futures:
                     if scan_interrupted:
-                        executor._threads.clear()
-                        concurrent.futures.thread._threads_queues.clear()
+                        executor.shutdown(wait=False, cancel_futures=True)
                         break
 
                     try:
@@ -989,8 +1002,7 @@ class FuzzStorm:
         This method will find nested paths like /recursive/level1/level2/level3 by exploring
         each discovered directory at every depth level.
         """
-        global scan_interrupted
-        scan_interrupted = False
+        reset_scan_interruption()
 
         print("\n" + "="*80)
         if self.use_colors:
@@ -1248,8 +1260,7 @@ class FuzzStorm:
 
     def extension_scan(self):
         """Extension scan: searches for files with specific extensions"""
-        global scan_interrupted
-        scan_interrupted = False
+        reset_scan_interruption()
 
         print("\n" + "="*80)
         if self.use_colors:
@@ -1300,8 +1311,7 @@ class FuzzStorm:
                 futures = [executor.submit(scan_with_progress, path) for path in extension_paths]
                 for future in futures:
                     if scan_interrupted:
-                        executor._threads.clear()
-                        concurrent.futures.thread._threads_queues.clear()
+                        executor.shutdown(wait=False, cancel_futures=True)
                         break
                     try:
                         future.result(timeout=0.1)
@@ -1445,8 +1455,7 @@ class FuzzStorm:
 
     def subdomain_scan(self):
         """Subdomain scan using the wordlist"""
-        global scan_interrupted
-        scan_interrupted = False
+        reset_scan_interruption()
 
         print("\n" + "="*80)
         if self.use_colors:
@@ -1491,8 +1500,7 @@ class FuzzStorm:
 
                 for future in futures:
                     if scan_interrupted:
-                        executor._threads.clear()
-                        concurrent.futures.thread._threads_queues.clear()
+                        executor.shutdown(wait=False, cancel_futures=True)
                         break
 
                     try:
@@ -1536,8 +1544,7 @@ class FuzzStorm:
 
     def content_scan(self):
         """Scans the content of 200 OK responses for new URLs"""
-        global scan_interrupted
-        scan_interrupted = False
+        reset_scan_interruption()
 
         print("\n" + "="*80)
         if self.use_colors:
@@ -1611,8 +1618,7 @@ class FuzzStorm:
 
                 for future in futures:
                     if scan_interrupted:
-                        executor._threads.clear()
-                        concurrent.futures.thread._threads_queues.clear()
+                        executor.shutdown(wait=False, cancel_futures=True)
                         break
 
                     try:
@@ -1653,8 +1659,7 @@ class FuzzStorm:
 
                     for future in futures:
                         if scan_interrupted:
-                            executor._threads.clear()
-                            concurrent.futures.thread._threads_queues.clear()
+                            executor.shutdown(wait=False, cancel_futures=True)
                             break
 
                         try:
@@ -1698,8 +1703,7 @@ class FuzzStorm:
         # Register the SIGINT signal handler (Ctrl+C)
         signal.signal(signal.SIGINT, handle_keyboard_interrupt)
 
-        global scan_interrupted
-        scan_interrupted = False
+        reset_scan_interruption()
 
 
 
@@ -1729,26 +1733,26 @@ class FuzzStorm:
                 print(
                     "\n[!] Subdomain scan interrupted by the user. Continuing with the next scan...")
                 # Reset the interruption flag for the next scan
-                scan_interrupted = False
+                reset_scan_interruption()
 
         # Execute standard scans
         if not self.normal_scan():
             # If interrupted, show message but continue with the next scan
             print("\n[!] Normal scan interrupted by the user. Continuing with the next scan...")
             # Reset the interruption flag for the next scan
-            scan_interrupted = False
+            reset_scan_interruption()
 
         if not self.recursive_scan():
             # If interrupted, show message but continue with the next scan
             print("\n[!] Recursive scan interrupted by the user. Continuing with the next scan...")
             # Reset the interruption flag for the next scan
-            scan_interrupted = False
+            reset_scan_interruption()
 
         if not self.extension_scan():
             # If interrupted, show message but continue with the next scan
             print("\n[!] Extension scan interrupted by the user. Continuing with the next scan...")
             # Reset the interruption flag for the next scan
-            scan_interrupted = False
+            reset_scan_interruption()
 
         # Execute content scan after standard scans
         if not self.content_scan():
