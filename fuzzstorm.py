@@ -193,6 +193,11 @@ VULNERABILITY_PATTERNS = {
                  "Possible API key exposure"),
     "jwt_token": (r"(eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)", "Possible JWT token exposure"),
     "aws_keys": (r"(AKIA[A-Z0-9]{16})", "Possible AWS access key exposure"),
+    "dir_listing": (r"(?is)<title>Index of /|<h1>Index of /", "Directory listing appears to be enabled"),
+    "stack_trace_java": (r"Exception in thread \\\".*?\\\" .*?\.java:\\d+", "Java stack trace exposed"),
+    "stack_trace_python": (r"Traceback \(most recent call last\):", "Python traceback exposed"),
+    "debug_tokens": (r"(?i)werkzeug debugger|django debug|X-Debug-Token", "Debug information disclosed"),
+    "config_leak": (r"(DB_PASSWORD|DATABASE_URL|SECRET_KEY)[\s]*[=:][\s]*['\"]?([^'\"\s]+)", "Potential configuration secret exposure"),
 }
 
 class ProgressMonitor:
@@ -279,6 +284,10 @@ class SecurityAnalyzer:
     def __init__(self, use_colors=True):
         self.use_colors = use_colors
         self.findings = {}
+        self.compiled_patterns = {
+            vuln_id: (re.compile(pattern), description)
+            for vuln_id, (pattern, description) in VULNERABILITY_PATTERNS.items()
+        }
 
     def check_security_headers(self, url, headers):
         """Checks for missing security headers"""
@@ -294,7 +303,7 @@ class SecurityAnalyzer:
 
         return missing_headers
 
-    def scan_for_vulnerabilities(self, url, content, status_code):
+    def scan_for_vulnerabilities(self, url, content, status_code, headers=None):
         """Searches for patterns that may indicate vulnerabilities"""
         findings = []
 
@@ -312,8 +321,8 @@ class SecurityAnalyzer:
             content_str = str(content)
 
         # Search for vulnerability patterns
-        for vuln_id, (pattern, description) in VULNERABILITY_PATTERNS.items():
-            matches = re.findall(pattern, content_str)
+        for vuln_id, (pattern, description) in self.compiled_patterns.items():
+            matches = pattern.findall(content_str)
             if matches:
                 finding = {
                     "type": vuln_id,
@@ -321,6 +330,19 @@ class SecurityAnalyzer:
                     "matches": matches[:5]  # Limit to 5 matches to avoid overload
                 }
                 findings.append(finding)
+
+        # Check exposed version identifiers in response headers
+        if headers:
+            header_findings = []
+            for header_name in ("Server", "X-Powered-By"):
+                header_value = headers.get(header_name)
+                if header_value and any(char.isdigit() for char in header_value):
+                    header_findings.append({
+                        "type": "server_version",
+                        "description": f"{header_name} header exposes software version information",
+                        "matches": [header_value]
+                    })
+            findings.extend(header_findings)
 
         # Check 200 OK responses with small size (may indicate API endpoints)
         if status_code == 200 and len(content) < 100:
@@ -356,6 +378,8 @@ class FuzzStorm:
         self.detect_soft_404 = detect_soft_404 and SOFT_404_DETECTOR_AVAILABLE
         self.soft_404_threshold = soft_404_threshold
         self.debug = debug
+        self.soft_404_detector = None
+        self._soft_404_cache = {}
         
         # Show banner at startup
         self.show_banner()
@@ -500,6 +524,49 @@ class FuzzStorm:
             "empty": {},
             "text": f"test_data={random_str}&id=1&action=test"
         }
+
+    def _ensure_soft_404_detector(self):
+        """Create the soft 404 detector once and reuse it across requests."""
+        if not (self.detect_soft_404 and SOFT_404_DETECTOR_AVAILABLE):
+            return None
+
+        if self.soft_404_detector:
+            return self.soft_404_detector
+
+        self.soft_404_detector = Soft404Detector(
+            target_url=self.target_url,
+            threshold=self.soft_404_threshold,
+            proxy=self.proxy,
+            user_agent=self.session.headers.get('User-Agent'),
+            debug=self.debug
+        )
+        return self.soft_404_detector
+
+    def _is_soft_404(self, url):
+        """Check whether a URL likely represents a soft 404, caching results for speed."""
+        if not (self.detect_soft_404 and SOFT_404_DETECTOR_AVAILABLE):
+            return False
+
+        if url in self._soft_404_cache:
+            return self._soft_404_cache[url]
+
+        detector = self._ensure_soft_404_detector()
+        if not detector:
+            self._soft_404_cache[url] = False
+            return False
+
+        is_soft_404 = False
+        try:
+            is_soft_404 = detector.detect_soft_404(url)
+        finally:
+            self._soft_404_cache[url] = is_soft_404
+
+        if is_soft_404:
+            self.soft_404s.add(url)
+        else:
+            self.real_200s.add(url)
+
+        return is_soft_404
 
     def try_different_methods(self, url, progress_monitor=None):
         """Tries different HTTP methods when a 405 Method Not Allowed is encountered"""
@@ -686,7 +753,8 @@ class FuzzStorm:
                     # Check security headers
                     self.security_analyzer.check_security_headers(url, response.headers)
                     # Scan content for vulnerabilities
-                    self.security_analyzer.scan_for_vulnerabilities(url, response.content, status)
+                    self.security_analyzer.scan_for_vulnerabilities(
+                        url, response.content, status, headers=response.headers)
 
                 # Add to discovered URLs (regardless of status code)
                 # This ensures all URLs that receive a response are considered discovered
@@ -716,51 +784,23 @@ class FuzzStorm:
 
                             self.last_forbidden_report_time = current_time
                     elif status == 200:
-                        # Check if it's a soft 404 or a true 200
-                        if self.detect_soft_404 and SOFT_404_DETECTOR_AVAILABLE:
-                            try:
-                                # Analyze only this specific URL
-                                url_set = {url}
-                                detector = Soft404Detector(
-                                    target_url=self.target_url,
-                                    threshold=self.soft_404_threshold,
-                                    proxy=self.proxy,
-                                    user_agent=self.session.headers.get('User-Agent'),
-                                    debug=self.debug
-                                )
-                                is_soft_404 = detector.detect_soft_404(url)
+                        # Check if it's a soft 404 or a true 200 (cached to avoid repeated work)
+                        try:
+                            is_soft_404 = self._is_soft_404(url)
+                        except Exception as e:
+                            is_soft_404 = False
+                            if self.debug:
+                                print(f"[DEBUG] Error detecting soft 404: {e}")
 
-                                if is_soft_404:
-                                    self.soft_404s.add(url)
-                                    if self.use_colors:
-                                        status_str = Colors.YELLOW + "[SOFT 404]" + Colors.RESET
-                                        path_str = Colors.format_path(url)
-                                        size_str = Colors.format_size(f"{content_length} bytes")
-                                        msg = f"{status_str} {path_str} - {size_str}"
-                                    else:
-                                        msg = f"[SOFT 404] {url} - {content_length} bytes"
-                                else:
-                                    self.real_200s.add(url)
-                                    if self.use_colors:
-                                        status_str = Colors.format_status(200)
-                                        path_str = Colors.format_path(url)
-                                        size_str = Colors.format_size(f"{content_length} bytes")
-                                        msg = f"{status_str} {path_str} - {size_str}"
-                                    else:
-                                        msg = f"[200] {url} - {content_length} bytes"
-                            except Exception as e:
-                                # In case of error, display as normal 200
-                                if self.debug:
-                                    print(f"[DEBUG] Error detecting soft 404: {e}")
-                                if self.use_colors:
-                                    status_str = Colors.format_status(200)
-                                    path_str = Colors.format_path(url)
-                                    size_str = Colors.format_size(f"{content_length} bytes")
-                                    msg = f"{status_str} {path_str} - {size_str}"
-                                else:
-                                    msg = f"[200] {url} - {content_length} bytes"
+                        if is_soft_404:
+                            if self.use_colors:
+                                status_str = Colors.YELLOW + "[SOFT 404]" + Colors.RESET
+                                path_str = Colors.format_path(url)
+                                size_str = Colors.format_size(f"{content_length} bytes")
+                                msg = f"{status_str} {path_str} - {size_str}"
+                            else:
+                                msg = f"[SOFT 404] {url} - {content_length} bytes"
                         else:
-                            # If soft 404 detection is disabled, display as normal 200
                             if self.use_colors:
                                 status_str = Colors.format_status(200)
                                 path_str = Colors.format_path(url)
