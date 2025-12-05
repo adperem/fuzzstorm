@@ -17,6 +17,7 @@ import datetime
 import csv
 import signal
 import concurrent.futures
+import subprocess
 from urllib.parse import urljoin, urlparse
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
@@ -3662,6 +3663,56 @@ class FuzzStorm:
             print(banner)
             print(info)
 
+
+def detect_web_technologies(target_url, proxy=None):
+    """Detects web technologies using the Wappalyzer CLI.
+
+    The Wappalyzer CLI honors HTTP(S)_PROXY and ALL_PROXY environment variables,
+    so ensure those are set when a proxy (including Tor via socks5h) is
+    configured for the scan.
+    """
+    print(Colors.format_info("Detecting web technologies with Wappalyzer CLI..."))
+
+    env = os.environ.copy()
+    if proxy:
+        env.update({
+            "HTTP_PROXY": proxy,
+            "HTTPS_PROXY": proxy,
+            "ALL_PROXY": proxy,
+        })
+        print(Colors.format_info(f"Routing Wappalyzer traffic through proxy: {proxy}"))
+
+    try:
+        result = subprocess.run(
+            ["wappalyzer", target_url],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=env
+        )
+    except FileNotFoundError:
+        print(
+            Colors.format_error(
+                "Wappalyzer CLI not found. Install it from "
+                "https://github.com/gokulapap/wappalyzer-cli inside a virtual environment (python3 -m venv venv)."
+            )
+        )
+        return
+    except subprocess.CalledProcessError as exc:
+        print(Colors.format_error("Wappalyzer CLI failed to analyze the target."))
+        if exc.stdout:
+            print(exc.stdout.strip())
+        if exc.stderr:
+            print(exc.stderr.strip())
+        return
+
+    output = result.stdout.strip()
+    if output:
+        print(Colors.format_success("Detected technologies:"))
+        print(output)
+    else:
+        print(Colors.format_warning("Wappalyzer CLI returned no output."))
+
 def main():
     parser = argparse.ArgumentParser(description='FuzzStorm - Advanced web fuzzing tool')
     parser.add_argument('-u', '--url', required=True, help='Target URL')
@@ -3685,6 +3736,8 @@ def main():
                         help='Route traffic through Tor (requires Tor to be installed and running)')
     parser.add_argument('--security-analysis', action='store_true',
                         help='Enable security analysis (headers and vulnerabilities)')
+    parser.add_argument('--tech-detect', action='store_true',
+                        help='Show detected web technologies using the Wappalyzer CLI')
     parser.add_argument('--no-report', action='store_true', help='Disable automatic report generation')
     parser.add_argument('--no-detect-soft-404', action='store_true',
                         help='Disable detection of soft 404 pages (enabled by default)')
@@ -3763,6 +3816,13 @@ def main():
             print("[-] Error: To use Tor, you need to install 'PySocks'")
             print("[-] Install it with: pip install PySocks")
             sys.exit(1)
+
+        # Route traffic through the default Tor SOCKS proxy
+        args.proxy = 'socks5h://127.0.0.1:9050'
+        print(Colors.format_info(f"Using Tor proxy at {args.proxy}"))
+
+    if args.tech_detect:
+        detect_web_technologies(args.url, proxy=args.proxy)
 
     # Create a global variable to store the FuzzStorm instance
     global fuzzer

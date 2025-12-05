@@ -25,6 +25,11 @@ cd fuzzstorm
 
 # Install dependencies
 pip install -r requirements.txt
+
+# (Optional) Detect web technologies with Wappalyzer CLI
+python3 -m venv venv
+source venv/bin/activate
+pip install git+https://github.com/gokulapap/wappalyzer-cli.git
 ```
 
 ## Basic Usage
@@ -57,6 +62,7 @@ python fuzzstorm.py -u http://example.com -w wordlists/common.txt
   --no-content-scan     Disable content scanning for new URLs
   --proxy PROXY         Use proxy for requests
   --security-analysis   Enable security analysis
+  --tech-detect        Show detected web technologies using the Wappalyzer CLI
   --no-report           Disable automatic report generation
   --no-detect-soft-404  Disable soft 404 page detection (enabled by default)
   --soft-404-threshold  Similarity threshold for soft 404 detection (0.0-1.0, default: 0.9)
@@ -107,6 +113,12 @@ python fuzzstorm.py -u http://example.com -w wordlists/common.txt -e php,txt,bak
 ```bash
 python fuzzstorm.py -u http://example.com -w wordlists/common.txt --proxy http://proxy:8080
 ```
+
+### Detect Web Technologies
+```bash
+python fuzzstorm.py -u http://example.com -w wordlists/common.txt --tech-detect
+```
+This detection reuses your `--proxy` or `--tor` settings (Tor defaults to `socks5h://127.0.0.1:9050`).
 
 ### Export Results in JSON Format
 ```bash
