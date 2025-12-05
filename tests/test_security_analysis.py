@@ -42,6 +42,19 @@ class SecurityAnalyzerTests(unittest.TestCase):
         self.assertFalse(findings)
         self.assertNotIn(self.url, self.analyzer.findings)
 
+    def test_techackz_results_are_recorded(self):
+        technologies = [{"name": "nginx", "version": "1.25"}, "python"]
+        vulnerabilities = [{"description": "CVE-1234"}, "CVE-5678"]
+
+        self.analyzer.add_techackz_results(self.url, technologies, vulnerabilities, {"raw": True})
+
+        self.assertIn(self.url, self.analyzer.findings)
+        techackz = self.analyzer.findings[self.url].get("techackz")
+
+        self.assertIsNotNone(techackz)
+        self.assertEqual(techackz["technologies"], technologies)
+        self.assertEqual(techackz["vulnerabilities"], vulnerabilities)
+
 
 if __name__ == "__main__":
     unittest.main()

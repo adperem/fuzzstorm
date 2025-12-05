@@ -10,7 +10,7 @@ FuzzStorm is an advanced web fuzzing tool developed in Python to discover resour
 - 🧪 **Automatic Testing of Alternative HTTP Methods**
 - 🧹 **Automatic Wordlist Cleaning**
 - 📊 **Progress Bars with Real-time Statistics**
-- 🔒 **Security Analysis**: missing headers and vulnerability patterns
+- 🔒 **Security Analysis**: missing headers, vulnerability patterns, and Techackz-powered technology/vulnerability mapping
 - 🌍 **Privacy**: support for proxies
 - 🎨 **Colored Output** for better readability
 - 🔍 **Soft 404 Detection** to identify false positives
@@ -61,7 +61,7 @@ python fuzzstorm.py -u http://example.com -w wordlists/common.txt
   --subdomains          Enable subdomain search
   --no-content-scan     Disable content scanning for new URLs
   --proxy PROXY         Use proxy for requests
-  --security-analysis   Enable security analysis
+  --security-analysis   Enable security analysis with Techackz tech/vuln mapping
   --tech-detect        Show detected web technologies using the Wappalyzer CLI
   --no-report           Disable automatic report generation
   --no-detect-soft-404  Disable soft 404 page detection (enabled by default)
@@ -139,6 +139,7 @@ FuzzStorm automatically analyzes the content of pages with 200 status codes to e
 When activated with `--security-analysis`, FuzzStorm checks for:
 - Missing security headers (HSTS, CSP, X-Frame-Options, etc.)
 - Vulnerability patterns in responses (SQL errors, internal paths, exposed tokens)
+- **Techackz integration** to enumerate detected technologies and correlate them with known vulnerabilities
 
 ### Soft 404 Detection
 FuzzStorm can detect "soft 404" pages - pages that return a 200 status code but are actually not found pages. This helps reduce false positives in your scan results.
