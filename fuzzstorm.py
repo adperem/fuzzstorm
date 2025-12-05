@@ -18,6 +18,8 @@ import csv
 import signal
 import concurrent.futures
 import subprocess
+import tempfile
+import shutil
 from urllib.parse import urljoin, urlparse
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
@@ -290,6 +292,22 @@ class SecurityAnalyzer:
             for vuln_id, (pattern, description) in VULNERABILITY_PATTERNS.items()
         }
 
+    def add_techackz_results(self, url, technologies, vulnerabilities, raw_output):
+        """Stores results returned by Techackz integration.
+
+        Args:
+            url (str): Target URL analyzed.
+            technologies (list): Normalized list of detected technologies.
+            vulnerabilities (list): Normalized list of detected vulnerabilities.
+            raw_output (dict): Raw JSON output from Techackz for reference.
+        """
+        self.findings.setdefault(url, {})
+        self.findings[url]["techackz"] = {
+            "technologies": technologies or [],
+            "vulnerabilities": vulnerabilities or [],
+            "raw_output": raw_output or {},
+        }
+
     def check_security_headers(self, url, headers):
         """Checks for missing security headers"""
         missing_headers = []
@@ -437,6 +455,131 @@ class FuzzStorm:
                 'https': self.proxy
             }
             print(f"[*] Using proxy: {self.proxy}")
+
+    def _ensure_techackz_repo(self):
+        """Clones Techackz locally if it is not already available."""
+        repo_url = "https://github.com/gotr00t0day/Techackz.git"
+        base_dir = os.path.join(tempfile.gettempdir(), "techackz")
+
+        if os.path.isdir(os.path.join(base_dir, ".git")):
+            return base_dir
+
+        if os.path.exists(base_dir):
+            try:
+                shutil.rmtree(base_dir)
+            except OSError:
+                pass
+
+        try:
+            subprocess.run([
+                "git", "clone", "--depth", "1", repo_url, base_dir
+            ], check=True, capture_output=True, text=True)
+        except FileNotFoundError:
+            print(Colors.format_error("Git is not available to clone Techackz. Skipping Techackz integration."))
+            return None
+        except subprocess.CalledProcessError as exc:
+            error_msg = exc.stderr.strip() if exc.stderr else str(exc)
+            print(Colors.format_error(f"Unable to clone Techackz: {error_msg}"))
+            return None
+
+        return base_dir
+
+    def _extract_techackz_summary(self, raw_results):
+        """Builds a small summary from Techackz JSON results."""
+        technologies = []
+        vulnerabilities = []
+
+        def _extend_from_candidate(candidate, container):
+            if isinstance(candidate, list):
+                container.extend(candidate)
+
+        if isinstance(raw_results, dict):
+            _extend_from_candidate(raw_results.get("technologies"), technologies)
+            _extend_from_candidate(raw_results.get("detected_technologies"), technologies)
+            _extend_from_candidate(raw_results.get("vulnerabilities"), vulnerabilities)
+            _extend_from_candidate(raw_results.get("nuclei_findings"), vulnerabilities)
+
+            for nested_key in ("results", "targets", "scan_results"):
+                nested = raw_results.get(nested_key)
+                if isinstance(nested, dict):
+                    for value in nested.values():
+                        if isinstance(value, dict):
+                            _extend_from_candidate(value.get("technologies"), technologies)
+                            _extend_from_candidate(value.get("detected_technologies"), technologies)
+                            _extend_from_candidate(value.get("vulnerabilities"), vulnerabilities)
+                            _extend_from_candidate(value.get("nuclei_findings"), vulnerabilities)
+
+        return technologies, vulnerabilities
+
+    def run_techackz_analysis(self):
+        """Runs Techackz to enumerate technologies and vulnerabilities."""
+        repo_dir = self._ensure_techackz_repo()
+        if not repo_dir:
+            return
+
+        print(Colors.format_info("Running Techackz technology and vulnerability analysis..."))
+
+        env = os.environ.copy()
+        if self.proxy:
+            env.update({
+                "HTTP_PROXY": self.proxy,
+                "HTTPS_PROXY": self.proxy,
+                "ALL_PROXY": self.proxy,
+            })
+
+        output_path = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="techackz_", suffix=".json", delete=False) as tmp_output:
+                output_path = tmp_output.name
+
+            command = [
+                sys.executable,
+                os.path.join(repo_dir, "techackz.py"),
+                "-u", self.target_url,
+                "-o", output_path,
+                "--show-all-detections",
+            ]
+
+            if self.proxy:
+                command.append("--ignore-ssl")
+
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                env=env
+            )
+
+            if result.returncode != 0:
+                print(Colors.format_warning("Techackz returned a non-zero exit code; skipping integration."))
+                if result.stdout:
+                    print(result.stdout.strip())
+                if result.stderr:
+                    print(result.stderr.strip())
+                return
+
+            if not os.path.isfile(output_path):
+                print(Colors.format_warning("Techackz did not produce an output file."))
+                return
+
+            with open(output_path, "r") as tech_file:
+                try:
+                    raw_results = json.load(tech_file)
+                except json.JSONDecodeError:
+                    print(Colors.format_warning("Unable to parse Techackz JSON output."))
+                    return
+
+            technologies, vulnerabilities = self._extract_techackz_summary(raw_results)
+            if hasattr(self, 'security_analyzer'):
+                self.security_analyzer.add_techackz_results(
+                    self.target_url, technologies, vulnerabilities, raw_results)
+                print(Colors.format_success("Techackz results added to security analysis."))
+        finally:
+            if output_path:
+                try:
+                    os.remove(output_path)
+                except Exception:
+                    pass
 
     def clean_wordlist(self, raw_wordlist):
         """Cleans the wordlist: removes empty lines and comments (starting with #)"""
@@ -1801,6 +1944,10 @@ class FuzzStorm:
             print("\n[!] Content scan interrupted by the user.")
             # No need to reset the flag here as it's the last scan
 
+        # Execute Techackz-based technology and vulnerability analysis
+        if self.security_analysis and hasattr(self, 'security_analyzer'):
+            self.run_techackz_analysis()
+
         elapsed_time = time.time() - start_time
 
         # Display final summary in table format
@@ -1953,6 +2100,45 @@ class FuzzStorm:
 
                             print("+-----------------------------------------------------------------------------+")
 
+                    techackz_data = issues.get("techackz")
+                    if techackz_data:
+                        technologies = techackz_data.get("technologies", [])
+                        vulns = techackz_data.get("vulnerabilities", [])
+
+                        if technologies:
+                            print("\n+-----------------------------------------------------------------------------+")
+                            print("| Technologies detected by Techackz:                                         |")
+                            print("+-----------------------------------------------------------------------------+")
+                            for tech in technologies[:5]:
+                                tech_display = tech
+                                if isinstance(tech, dict):
+                                    name = tech.get("name") or tech.get("technology") or "Unknown"
+                                    version = tech.get("version") or ""
+                                    if version:
+                                        tech_display = f"{name} {version}"
+                                    else:
+                                        tech_display = name
+                                if len(str(tech_display)) > 75:
+                                    tech_display = str(tech_display)[:72] + "..."
+                                print(f"| {str(tech_display).ljust(75)} |")
+                            print("+-----------------------------------------------------------------------------+")
+
+                        if vulns:
+                            print("\n+-----------------------------------------------------------------------------+")
+                            print("| Vulnerabilities reported by Techackz:                                      |")
+                            print("+-----------------------------------------------------------------------------+")
+                            for vuln in vulns[:5]:
+                                if isinstance(vuln, dict):
+                                    desc = vuln.get("description") or vuln.get("name") or str(vuln)
+                                else:
+                                    desc = str(vuln)
+
+                                if len(desc) > 75:
+                                    desc = desc[:72] + "..."
+
+                                print(f"| {desc.ljust(75)} |")
+                            print("+-----------------------------------------------------------------------------+")
+
         print("\n+-----------------------------------------------------------------------------+")
         print("|                             END OF REPORT                                   |")
         print("+-----------------------------------------------------------------------------+\n")
@@ -2037,6 +2223,30 @@ class FuzzStorm:
                                             if i < 3:
                                                 f.write(f"\t\t\t- {match}\n")
 
+                                techackz_data = issues.get("techackz")
+                                if techackz_data:
+                                    f.write("\t- Techackz Findings:\n")
+                                    technologies = techackz_data.get("technologies", [])
+                                    if technologies:
+                                        f.write("\t\t* Technologies:\n")
+                                        for tech in technologies[:5]:
+                                            tech_display = tech
+                                            if isinstance(tech, dict):
+                                                name = tech.get("name") or tech.get("technology") or "Unknown"
+                                                version = tech.get("version") or ""
+                                                tech_display = f"{name} {version}".strip()
+                                            f.write(f"\t\t\t- {tech_display}\n")
+
+                                    vulns = techackz_data.get("vulnerabilities", [])
+                                    if vulns:
+                                        f.write("\t\t* Vulnerabilities:\n")
+                                        for vuln in vulns[:5]:
+                                            if isinstance(vuln, dict):
+                                                desc = vuln.get("description") or vuln.get("name") or str(vuln)
+                                            else:
+                                                desc = str(vuln)
+                                            f.write(f"\t\t\t- {desc}\n")
+
             elif format.lower() == "json":
                 # Create results dictionary
                 results = {
@@ -2116,6 +2326,7 @@ class FuzzStorm:
 
                         # Gather vulnerabilities if available
                         vulnerabilities = ""
+                        techackz_summary = ""
                         if self.security_analysis and hasattr(self, 'security_analyzer'):
                             findings = self.security_analyzer.generate_report()
                             if url in findings:
@@ -2123,7 +2334,32 @@ class FuzzStorm:
                                     vuln_list = [v["description"] for v in findings[url]["vulnerabilities"]]
                                     vulnerabilities = "; ".join(vuln_list)
 
-                        writer.writerow([url, status, content_length, headers, vulnerabilities])
+                                techackz_data = findings[url].get("techackz")
+                                if techackz_data:
+                                    tech_names = []
+                                    for tech in techackz_data.get("technologies", [])[:3]:
+                                        if isinstance(tech, dict):
+                                            name = tech.get("name") or tech.get("technology") or "Unknown"
+                                            version = tech.get("version") or ""
+                                            tech_names.append(f"{name} {version}".strip())
+                                        else:
+                                            tech_names.append(str(tech))
+
+                                    vuln_names = []
+                                    for vuln in techackz_data.get("vulnerabilities", [])[:3]:
+                                        if isinstance(vuln, dict):
+                                            vuln_names.append(vuln.get("description") or vuln.get("name") or str(vuln))
+                                        else:
+                                            vuln_names.append(str(vuln))
+
+                                    techackz_parts = []
+                                    if tech_names:
+                                        techackz_parts.append(f"Tech: {', '.join(tech_names)}")
+                                    if vuln_names:
+                                        techackz_parts.append(f"Vulns: {', '.join(vuln_names)}")
+                                    techackz_summary = " | ".join(techackz_parts)
+
+                        writer.writerow([url, status, content_length, headers, "; ".join(filter(None, [vulnerabilities, techackz_summary]))])
 
             print(f"\n[+] Results exported in {format.upper()} format to {filename}")
             return True
@@ -3735,7 +3971,7 @@ def main():
     parser.add_argument('--tor', action='store_true',
                         help='Route traffic through Tor (requires Tor to be installed and running)')
     parser.add_argument('--security-analysis', action='store_true',
-                        help='Enable security analysis (headers and vulnerabilities)')
+                        help='Enable security analysis (headers, patterns, and Techackz scan)')
     parser.add_argument('--tech-detect', action='store_true',
                         help='Show detected web technologies using the Wappalyzer CLI')
     parser.add_argument('--no-report', action='store_true', help='Disable automatic report generation')
