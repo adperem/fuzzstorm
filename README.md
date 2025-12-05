@@ -118,6 +118,7 @@ python fuzzstorm.py -u http://example.com -w wordlists/common.txt --proxy http:/
 ```bash
 python fuzzstorm.py -u http://example.com -w wordlists/common.txt --tech-detect
 ```
+This detection reuses your `--proxy` or `--tor` settings (Tor defaults to `socks5h://127.0.0.1:9050`).
 
 ### Export Results in JSON Format
 ```bash

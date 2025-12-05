@@ -3664,16 +3664,31 @@ class FuzzStorm:
             print(info)
 
 
-def detect_web_technologies(target_url):
-    """Detects web technologies using the Wappalyzer CLI."""
+def detect_web_technologies(target_url, proxy=None):
+    """Detects web technologies using the Wappalyzer CLI.
+
+    The Wappalyzer CLI honors HTTP(S)_PROXY and ALL_PROXY environment variables,
+    so ensure those are set when a proxy (including Tor via socks5h) is
+    configured for the scan.
+    """
     print(Colors.format_info("Detecting web technologies with Wappalyzer CLI..."))
+
+    env = os.environ.copy()
+    if proxy:
+        env.update({
+            "HTTP_PROXY": proxy,
+            "HTTPS_PROXY": proxy,
+            "ALL_PROXY": proxy,
+        })
+        print(Colors.format_info(f"Routing Wappalyzer traffic through proxy: {proxy}"))
 
     try:
         result = subprocess.run(
             ["wappalyzer", target_url],
             capture_output=True,
             text=True,
-            check=True
+            check=True,
+            env=env
         )
     except FileNotFoundError:
         print(
@@ -3802,8 +3817,12 @@ def main():
             print("[-] Install it with: pip install PySocks")
             sys.exit(1)
 
+        # Route traffic through the default Tor SOCKS proxy
+        args.proxy = 'socks5h://127.0.0.1:9050'
+        print(Colors.format_info(f"Using Tor proxy at {args.proxy}"))
+
     if args.tech_detect:
-        detect_web_technologies(args.url)
+        detect_web_technologies(args.url, proxy=args.proxy)
 
     # Create a global variable to store the FuzzStorm instance
     global fuzzer
