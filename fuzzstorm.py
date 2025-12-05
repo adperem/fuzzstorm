@@ -1145,18 +1145,23 @@ class FuzzStorm:
                     return None
                 return self.scan_url(path, progress)
 
-            with ThreadPoolExecutor(max_workers=self.threads) as executor:
+            executor = ThreadPoolExecutor(max_workers=self.threads)
+            try:
                 futures = [executor.submit(scan_with_progress, path) for path in paths]
 
                 for future in futures:
                     if scan_interrupted:
-                        executor.shutdown(wait=False, cancel_futures=True)
                         break
 
                     try:
                         future.result(timeout=0.1)
                     except concurrent.futures.TimeoutError:
                         continue
+            finally:
+                executor.shutdown(
+                    wait=not scan_interrupted,
+                    cancel_futures=scan_interrupted,
+                )
 
             # Close the progress bar
             if scan_interrupted:
@@ -1291,7 +1296,8 @@ class FuzzStorm:
                 next_level_dirs = set()
                 found_dirs_count = 0
 
-                with ThreadPoolExecutor(max_workers=self.threads) as executor:
+                executor = ThreadPoolExecutor(max_workers=self.threads)
+                try:
                     futures = [executor.submit(process_url, url) for url in all_urls_to_check]
 
                     for future in futures:
@@ -1324,7 +1330,7 @@ class FuzzStorm:
                                     # Also use the progress monitor's print method
                                     if self.use_colors:
                                         path_str = Colors.format_path(url_to_add)
-                                        colored_msg = f"{Colors.GREEN}[+]{Colors.RESET} Found new directory: {path_str} [{Colors.format_status(status)}]"
+                                        colored_msg = f"{Colors.GREEN}[+]{Colors.RESET} Found new directory: {path_str}[{Colors.format_status(status)}]"
                                         progress.print(colored_msg)
                                 else:
                                     if self.debug:
@@ -1349,6 +1355,11 @@ class FuzzStorm:
 
                         except (TimeoutError, concurrent.futures.TimeoutError):
                             continue
+                finally:
+                    executor.shutdown(
+                        wait=not scan_interrupted,
+                        cancel_futures=scan_interrupted
+                    )
 
                 if scan_interrupted:
                     progress.interrupt()
@@ -1491,16 +1502,21 @@ class FuzzStorm:
                     return None
                 return self.scan_url(path, progress)
 
-            with ThreadPoolExecutor(max_workers=self.threads) as executor:
+            executor = ThreadPoolExecutor(max_workers=self.threads)
+            try:
                 futures = [executor.submit(scan_with_progress, path) for path in extension_paths]
                 for future in futures:
                     if scan_interrupted:
-                        executor.shutdown(wait=False, cancel_futures=True)
                         break
                     try:
                         future.result(timeout=0.1)
                     except concurrent.futures.TimeoutError:
                         continue
+            finally:
+                executor.shutdown(
+                    wait=not scan_interrupted,
+                    cancel_futures=scan_interrupted,
+                )
 
             # Close the progress bar
             if scan_interrupted:
@@ -1679,18 +1695,23 @@ class FuzzStorm:
                     return None
                 return self.check_subdomain(subdomain, progress)
 
-            with ThreadPoolExecutor(max_workers=self.threads) as executor:
+            executor = ThreadPoolExecutor(max_workers=self.threads)
+            try:
                 futures = [executor.submit(check_with_progress, subdomain) for subdomain in subdomains]
 
                 for future in futures:
                     if scan_interrupted:
-                        executor.shutdown(wait=False, cancel_futures=True)
                         break
 
                     try:
                         future.result(timeout=0.1)
                     except concurrent.futures.TimeoutError:
                         continue
+            finally:
+                executor.shutdown(
+                    wait=not scan_interrupted,
+                    cancel_futures=scan_interrupted,
+                )
 
             # Close the progress bar
             if scan_interrupted:
@@ -1797,18 +1818,23 @@ class FuzzStorm:
                 return extracted_urls
 
             # Process the content of all URLs in parallel
-            with ThreadPoolExecutor(max_workers=self.threads) as executor:
+            executor = ThreadPoolExecutor(max_workers=self.threads)
+            try:
                 futures = [executor.submit(process_content, url) for url in urls_to_scan]
 
                 for future in futures:
                     if scan_interrupted:
-                        executor.shutdown(wait=False, cancel_futures=True)
                         break
 
                     try:
                         future.result(timeout=0.1)
                     except concurrent.futures.TimeoutError:
                         continue
+            finally:
+                executor.shutdown(
+                    wait=not scan_interrupted,
+                    cancel_futures=scan_interrupted,
+                )
 
             # Close the progress bar
             if scan_interrupted:
@@ -1838,18 +1864,23 @@ class FuzzStorm:
                         return None
                     return self.scan_url(url, progress)
 
-                with ThreadPoolExecutor(max_workers=self.threads) as executor:
+                executor = ThreadPoolExecutor(max_workers=self.threads)
+                try:
                     futures = [executor.submit(scan_with_progress, url) for url in new_urls]
 
                     for future in futures:
                         if scan_interrupted:
-                            executor.shutdown(wait=False, cancel_futures=True)
                             break
 
                         try:
                             future.result(timeout=0.1)
                         except concurrent.futures.TimeoutError:
                             continue
+                finally:
+                    executor.shutdown(
+                        wait=not scan_interrupted,
+                        cancel_futures=scan_interrupted,
+                    )
 
                 # Close the progress bar
                 if scan_interrupted:
