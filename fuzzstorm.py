@@ -287,10 +287,27 @@ class SecurityAnalyzer:
     def __init__(self, use_colors=True):
         self.use_colors = use_colors
         self.findings = {}
+        self.analyzed_response_fingerprints = set()
         self.compiled_patterns = {
             vuln_id: (re.compile(pattern), description)
             for vuln_id, (pattern, description) in VULNERABILITY_PATTERNS.items()
         }
+
+    def should_analyze(self, url, status_code, content_length):
+        """Determines if a response should be analyzed for security issues."""
+
+        # Skip analysis for 404 responses
+        if status_code == 404:
+            return False
+
+        # Avoid repeating work for responses that look identical (same host, status and size)
+        parsed = urlparse(url)
+        fingerprint = (parsed.netloc, status_code, content_length)
+        if fingerprint in self.analyzed_response_fingerprints:
+            return False
+
+        self.analyzed_response_fingerprints.add(fingerprint)
+        return True
 
     def add_techackz_results(self, url, technologies, vulnerabilities, raw_output):
         """Stores results returned by Techackz integration.
@@ -894,11 +911,12 @@ class FuzzStorm:
 
                 # Perform security analysis if enabled
                 if self.security_analysis and hasattr(self, 'security_analyzer'):
-                    # Check security headers
-                    self.security_analyzer.check_security_headers(url, response.headers)
-                    # Scan content for vulnerabilities
-                    self.security_analyzer.scan_for_vulnerabilities(
-                        url, response.content, status, headers=response.headers)
+                    if self.security_analyzer.should_analyze(url, status, content_length):
+                        # Check security headers
+                        self.security_analyzer.check_security_headers(url, response.headers)
+                        # Scan content for vulnerabilities
+                        self.security_analyzer.scan_for_vulnerabilities(
+                            url, response.content, status, headers=response.headers)
 
                 # Add to discovered URLs (regardless of status code)
                 # This ensures all URLs that receive a response are considered discovered
